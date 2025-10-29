@@ -2,6 +2,7 @@ import time
 import requests
 import json
 from datetime import datetime
+import sys
 
 class Worker:
     def __init__(self, worker_id, producer_url):
@@ -74,9 +75,15 @@ class Worker:
                 time.sleep(5)
 
 if __name__ == "__main__":
+    # Get worker ID from commnad line argument, or user default
+    if len(sys.argv) > 1:
+        worker_id = sys.argv[1]
+    else:
+        worker_id = "worker-1"
+        
     # Create a worker instance
     worker = Worker(
-        worker_id="worker-1",
+        worker_id=worker_id,
         producer_url="http://localhost:5000"
     )
 
