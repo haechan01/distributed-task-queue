@@ -271,7 +271,7 @@ class Raft:
         for peer in self.peers:
             if peer != self.node_id:
                 self.next_index[peer] = len(self.log)
-                self.match_index[peer] = self.commit_index
+                self.match_index[peer] = -1
 
         # Send initial heartbeats
         self._send_append_entries()
