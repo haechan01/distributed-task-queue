@@ -5,9 +5,9 @@ from datetime import datetime
 import sys
 
 class Worker:
-    def __init__(self, worker_id, producer_url):
+    def __init__(self, worker_id, broker_url):
         self.worker_id = worker_id
-        self.producer_url = producer_url
+        self.broker_url = broker_url
         self.running = True
 
     def process_task(self, task):
@@ -37,13 +37,13 @@ class Worker:
         Main worker loop. COntinuously check for tasks.
         """
         print(f"[{self.worker_id}] Worker started!")
-        print(f"[{self.worker_id}] Checking producer at {self.producer_url}")
+        print(f"[{self.worker_id}] Checking producer at {self.broker_url}")
 
         while self.running:
             try:
                 # Try to get a pending task
                 response = requests.post(
-                    f"{self.producer_url}/get_pending_task",
+                    f"{self.broker_url}/get_pending_task",
                     json={"worker_id": self.worker_id}
                 )
 
@@ -56,7 +56,7 @@ class Worker:
 
                     # Report the result
                     complete_response = requests.post(
-                        f"{self.producer_url}/complete_task",
+                        f"{self.broker_url}/complete_task",
                         json={"task_id": task['task_id'], "result": result}
                     )
 
@@ -80,11 +80,11 @@ if __name__ == "__main__":
         worker_id = sys.argv[1]
     else:
         worker_id = "worker-1"
-        
+
     # Create a worker instance
     worker = Worker(
         worker_id=worker_id,
-        producer_url="http://localhost:5000"
+        broker_url="http://localhost:6000"
     )
 
     # Start the worker loop
