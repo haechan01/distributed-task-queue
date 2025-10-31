@@ -6,7 +6,6 @@ import threading
 from typing import Dict, Any
 import uuid
 import sys
-import os
 from raft_algorithm import Raft
 from real_protocols import HTTPTransport, RealScheduler
 
@@ -99,13 +98,24 @@ class RaftBroker:
         self.transport = HTTPTransport(broker_urls)
         self.scheduler = RealScheduler()
         
+        # Commit synchronization for waiting on log commits
+        self.commit_lock = threading.Lock()
+        self.commit_condition = threading.Condition(self.commit_lock)
+        
+        # Wrap the apply function to notify waiters
+        original_apply = self.state_machine.apply_command
+        def apply_with_notify(command: Dict[str, Any], index: int):
+            original_apply(command, index)
+            with self.commit_lock:
+                self.commit_condition.notify_all()
+        
         # Initialize Raft
         self.raft = Raft(
             node_id=node_id,
             peers=peers,  # Pass all peers including self
             transport=self.transport,
             scheduler=self.scheduler,
-            apply=self.state_machine.apply_command
+            apply=apply_with_notify
         )
         
         # Worker tracking (not replicated via Raft)
@@ -118,6 +128,25 @@ class RaftBroker:
         
         # Start health check thread
         self._start_health_check()
+    
+    def _wait_for_commit(self, target_index: int, timeout: float = 1.0) -> bool:
+        """
+        Wait for commit_index to reach target_index.
+        Returns True if committed, False if timeout.
+        """
+        import time
+        start_time = time.time()
+        
+        with self.commit_lock:
+            while self.raft.commit_index < target_index:
+                elapsed = time.time() - start_time
+                if elapsed >= timeout:
+                    return False
+                
+                remaining = timeout - elapsed
+                self.commit_condition.wait(timeout=remaining)
+            
+            return True
     
     def _setup_routes(self):
         """Setup Flask HTTP routes."""
@@ -190,11 +219,13 @@ class RaftBroker:
                 "started_at": datetime.now().isoformat()
             }
             try:
+                # Get log index before appending
+                target_index = len(self.raft.log)
                 self.raft.client_append(command)
                 
-                # FIXED: Wait for commit before returning
-                import time
-                time.sleep(0.05)
+                # Wait for commit before returning
+                if not self._wait_for_commit(target_index, timeout=1.0):
+                    return jsonify({"error": "Commit timeout"}), 503
                 
                 # Return the task
                 return jsonify(task), 200
@@ -223,11 +254,13 @@ class RaftBroker:
             }
             
             try:
+                # Get log index before appending
+                target_index = len(self.raft.log)
                 self.raft.client_append(command)
                 
-                # FIXED: Wait for commit
-                import time
-                time.sleep(0.05)
+                # Wait for commit before returning
+                if not self._wait_for_commit(target_index, timeout=1.0):
+                    return jsonify({"error": "Commit timeout"}), 503
                 
                 return jsonify({"message": "Task completed"}), 200
             except RuntimeError as e:
