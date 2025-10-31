@@ -129,6 +129,15 @@ class RaftBroker:
         # Start health check thread
         self._start_health_check()
     
+    def _append_and_get_index(self, command: Dict[str, Any]) -> int:
+        """
+        Atomically append command to Raft log and return its index.
+        Must be called while holding commit_lock.
+        """
+        target_index = len(self.raft.log)
+        self.raft.client_append(command)
+        return target_index
+    
     def _wait_for_commit(self, target_index: int, timeout: float = 1.0) -> bool:
         """
         Wait for commit_index to reach target_index.
@@ -219,9 +228,9 @@ class RaftBroker:
                 "started_at": datetime.now().isoformat()
             }
             try:
-                # Get log index before appending
-                target_index = len(self.raft.log)
-                self.raft.client_append(command)
+                # Atomically append and get the index
+                with self.commit_lock:
+                    target_index = self._append_and_get_index(command)
                 
                 # Wait for commit before returning
                 if not self._wait_for_commit(target_index, timeout=1.0):
@@ -254,9 +263,9 @@ class RaftBroker:
             }
             
             try:
-                # Get log index before appending
-                target_index = len(self.raft.log)
-                self.raft.client_append(command)
+                # Atomically append and get the index
+                with self.commit_lock:
+                    target_index = self._append_and_get_index(command)
                 
                 # Wait for commit before returning
                 if not self._wait_for_commit(target_index, timeout=1.0):
