@@ -1,8 +1,10 @@
+"""Guidance and scaffolding for implementing the Raft consensus algorithm."""
+
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
-from dslabs.protocols import Scheduler, SchedulerCancel, Transport
+from protocols import Scheduler, SchedulerCancel, Transport
 
 
 class RaftState(str, Enum):
@@ -147,8 +149,8 @@ class Raft:
 
         self._cancel_election_timer()
 
-        # Randomize timeout between 150ms and 300ms
-        timeout_ms = random.randint(150, 300)
+        # Randomize timeout between 150ms and 500ms (increased range)
+        timeout_ms = random.randint(300, 600)
 
         self._election_timer = self.scheduler.call_later(
             timeout_ms, self._on_election_timeout
@@ -169,7 +171,7 @@ class Raft:
         self._cancel_heartbeat_timer()
 
         # Heartbeat interval 
-        heartbeat_ms = 50
+        heartbeat_ms = 100
 
         self._heartbeat_timer = self.scheduler.call_later(
             heartbeat_ms, self._on_heartbeat_timeout
@@ -218,6 +220,7 @@ class Raft:
                     "last_log_term": last_log_term,
                 })
 
+
     def _on_heartbeat_timeout(self) -> None:
         """
         Called when heartbeat timer fires. Send AppendEntries to all followers.
@@ -261,6 +264,8 @@ class Raft:
         """
         Transition to leader state and initialize leader-specific state.
         """
+        print(f"\n[{self.node_id}] 🎉 BECOMING LEADER for term {self.current_term}")
+        
         self.state = RaftState.LEADER
         self.leader_id = self.node_id
 
@@ -281,6 +286,14 @@ class Raft:
         """
         Step down to follower if we see a higher term.
         """
+        import traceback
+        print(f"[{self.node_id}] ⬇️  Stepping down to FOLLOWER (term {self.current_term} → {term})")
+        print(f"[{self.node_id}] Current state: {self.state}")
+        print(f"[{self.node_id}] Traceback:")
+        for line in traceback.format_stack()[:-1]:
+            if 'raft_algorithm.py' in line:
+                print(line.strip())
+        
         self.current_term = term
         self.state = RaftState.FOLLOWER
         self.voted_for = None
@@ -297,10 +310,21 @@ class Raft:
         last_log_index = msg["last_log_index"]
         last_log_term = msg["last_log_term"]
 
+
         vote_granted = False
 
-        # Check if we can grant the vote
-        if term >= self.current_term:
+        # Update our term first if we see a higher one
+        if term > self.current_term:
+            self.current_term = term
+            self.voted_for = None  # Reset vote for new term
+            if self.state != RaftState.FOLLOWER:
+                print(f"[{self.node_id}] Stepping down to FOLLOWER")
+                self.state = RaftState.FOLLOWER
+                self._cancel_heartbeat_timer()
+            self._reset_election_timer()
+
+        # Now check if we can grant the vote (only in same term)
+        if term == self.current_term:
             # Check if log is at least as up-to-date
             our_last_index = len(self.log) - 1
             our_last_term = (self.log[our_last_index].term
@@ -312,10 +336,13 @@ class Raft:
 
             vote_ok = (self.voted_for is None or
                       self.voted_for == candidate_id)
+            
+            
             if log_ok and vote_ok:
                 vote_granted = True
                 self.voted_for = candidate_id
                 self._reset_election_timer()
+
 
         self.transport.send(candidate_id, {
             "type": "request_vote_response",
@@ -329,6 +356,8 @@ class Raft:
         Handle RequestVote response. Track votes during election.
         Become leader on majority.
         """
+
+        
         # Only process if we're still a candidate in the same term
         if (self.state != RaftState.CANDIDATE or
                 msg["term"] != self.current_term):
@@ -338,8 +367,15 @@ class Raft:
             self._votes_received.add(msg["from"])
 
             # Check if we have majority
-            majority = (len(self.peers) + 1) // 2 + 1
+            if self.node_id in self.peers:
+                total_nodes = len(self.peers)
+            else:
+                total_nodes = len(self.peers) + 1
+        
+            majority = total_nodes // 2 + 1
+            
             if len(self._votes_received) >= majority:
+                print(f"[{self.node_id}] 👑 WON ELECTION! Becoming LEADER")
                 self._become_leader()
 
     def _handle_append_entries(self, msg: Dict[str, Any]) -> None:
@@ -355,9 +391,20 @@ class Raft:
 
         success = False
 
+        # CRITICAL FIX: Update term if we see a higher one
+        if term > self.current_term:
+            self.current_term = term
+            self.voted_for = None
+            if self.state != RaftState.FOLLOWER:
+                self.state = RaftState.FOLLOWER
+                self._cancel_heartbeat_timer()
+
         if term >= self.current_term:
             # Valid leader, reset election timer
             self.leader_id = leader_id
+            if self.state != RaftState.FOLLOWER:
+                self.state = RaftState.FOLLOWER
+                self._cancel_heartbeat_timer()
             self._reset_election_timer()
 
             # Check if log matches at prev_log_index
@@ -446,7 +493,13 @@ class Raft:
                     if peer != self.node_id and peer_match >= n:
                         count += 1
 
-                majority = (len(self.peers) + 1) // 2 + 1
+                if self.node_id in self.peers:
+                    total_nodes = len(self.peers)
+                else:
+                    total_nodes = len(self.peers) + 1
+                
+                majority = total_nodes // 2 + 1
+
                 if count >= majority:
                     self.commit_index = n
                     self._apply_committed()
