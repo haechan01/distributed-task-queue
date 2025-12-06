@@ -78,6 +78,7 @@ class BrokerStateMachine:
                 "pending": sum(1 for t in self.tasks.values() if t["status"] == "pending"),
                 "processing": sum(1 for t in self.tasks.values() if t["status"] == "processing"),
                 "completed": sum(1 for t in self.tasks.values() if t["status"] == "completed"),
+                "reassigned": sum(1 for t in self.tasks.values() if t.get("reassignment_count", 0) > 0),
             }
 
 
@@ -252,6 +253,20 @@ class RaftBroker:
             except RuntimeError as e:
                 return jsonify({"error": str(e)}), 503
         
+        @self.app.route('/task/<task_id>', methods=['GET'])
+        def get_task(task_id):
+            """Get status of a specific task."""
+            # Allow reading from any node (Follower reads are fine for status check)
+            # But for strict consistency we might want Leader only. 
+            # For this use case, eventual consistency is okay, but `state_machine` is replicated.
+            # Followers have the state machine too.
+            
+            task = self.state_machine.get_task(task_id)
+            if not task:
+                return jsonify({"error": "Task not found"}), 404
+            
+            return jsonify(task)
+        
         @self.app.route('/complete_task', methods=['POST'])
         def complete_task():
             """Worker reports task completion (leader only)."""
@@ -286,13 +301,7 @@ class RaftBroker:
             except RuntimeError as e:
                 return jsonify({"error": str(e)}), 503
         
-        @self.app.route('/task/<task_id>', methods=['GET'])
-        def get_task(task_id):
-            """Query task status (any broker)."""
-            task = self.state_machine.get_task(task_id)
-            if not task:
-                return jsonify({"error": "Task not found"}), 404
-            return jsonify(task), 200
+
         
         @self.app.route('/register_worker', methods=['POST'])
         def register_worker():
@@ -440,15 +449,32 @@ class RaftBroker:
                     continue  # Only leader reassigns tasks
                 
                 now = datetime.now()
+                dead_workers_found = []
+                
                 with self.worker_lock:
                     for worker_id, info in list(self.workers.items()):
                         elapsed = (now - info["last_heartbeat"]).total_seconds()
-                        if elapsed > 10 and info["status"] == "alive":
-                            print(f"[BROKER] Worker {worker_id} DEAD")
+                        if elapsed > 15 and info["status"] == "alive":
+                            print(f"[BROKER] Worker {worker_id} DEAD (last seen {elapsed:.1f}s ago)")
                             info["status"] = "dead"
-                            
-                            # TODO: Reassign tasks from dead worker
-        
+                            dead_workers_found.append(worker_id)
+                
+                # REAPER LOGIC: Reassign tasks
+                for wid in dead_workers_found:
+                    task_id = self._get_worker_task(wid)
+                    if task_id:
+                        print(f"[REAPER] Reassigning task {task_id} from dead worker {wid}")
+                        command = {
+                            "type": "reassign_task",
+                            "task_id": task_id,
+                            "reason": "worker_timeout"
+                        }
+                        try:
+                            # Submit reassignment to Raft
+                            self.raft.client_append(command)
+                        except Exception as e:
+                            print(f"[REAPER] Failed to reassign task {task_id}: {e}")
+
         threading.Thread(target=check_workers, daemon=True).start()
     
     def start(self):
