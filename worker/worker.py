@@ -4,6 +4,9 @@ import json
 from datetime import datetime
 import sys
 import threading
+import subprocess
+import tempfile
+import os
 
 class Worker:
     def __init__(self, worker_id, broker_urls):
@@ -66,6 +69,62 @@ class Worker:
                 print(f"[{self.worker_id}] Error sending heartbeat: {e}")
             threading.Event().wait(self.heartbeat_interval)
 
+    def execute_python_task(self, task):
+        """Execute Python code in isolated subprocess."""
+        payload = task.get("payload", {})
+        code = payload.get("code", "")
+        function_name = payload.get("function", "main")
+        args = payload.get("args", [])
+        timeout = payload.get("timeout", 30)
+        
+        # Create execution wrapper
+        wrapper = f'''
+import json
+import sys
+
+{code}
+
+if __name__ == "__main__":
+    try:
+        args = json.loads(sys.argv[1])
+        result = {function_name}(*args) if isinstance(args, list) else {function_name}(**args)
+        print(json.dumps({{"result": result, "status": "success"}}))
+    except Exception as e:
+        print(json.dumps({{"status": "error", "error": str(e)}}))
+'''
+        
+        # Create temp file
+        fd, script_path = tempfile.mkstemp(suffix='.py', text=True)
+        try:
+            with os.fdopen(fd, 'w') as f:
+                f.write(wrapper)
+            
+            # Execute
+            result = subprocess.run(
+                ['python3', script_path, json.dumps(args)],
+                capture_output=True,
+                text=True,
+                timeout=timeout
+            )
+            
+            if result.returncode == 0:
+                try:
+                    # Parse the last line of stdout which should be the JSON result
+                    lines = result.stdout.strip().split('\n')
+                    return json.loads(lines[-1])
+                except json.JSONDecodeError:
+                    return {"status": "error", "error": "Invalid output format", "stdout": result.stdout}
+            else:
+                return {"status": "error", "error": result.stderr}
+                
+        except subprocess.TimeoutExpired:
+            return {"status": "error", "error": "Timeout"}
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+        finally:
+            if os.path.exists(script_path):
+                os.unlink(script_path)
+
     def process_task(self, task):
         """
         Process a task.
@@ -74,19 +133,30 @@ class Worker:
         payload = task.get("payload")
         print(f"[{self.worker_id}] Processing task {task['task_id']}")
         print(f"[{self.worker_id}] Task type: {task_type}")
-        print(f"[{self.worker_id}] Payload: {payload}")
-
-        # Simulate work 
-        time.sleep(10)
-
-        # Return a result
-        result = {
-            "processed_by": self.worker_id,
-            "processed_at": datetime.now().isoformat(),
-            "output": f"Processed {payload}"
-        }
-
-        return result
+        
+        if task_type == "python_exec":
+            result_data = self.execute_python_task(task)
+            
+            # If execution failed, we still return the error as the result
+            if result_data.get("status") == "error":
+                print(f"[{self.worker_id}] Task failed: {result_data.get('error')}")
+            
+            return {
+                "processed_by": self.worker_id,
+                "processed_at": datetime.now().isoformat(),
+                "result": result_data.get("result"), # The actual return value of the function
+                "status": result_data.get("status"),
+                "error": result_data.get("error")
+            }
+        else:
+            # Legacy behavior
+            print(f"[{self.worker_id}] Payload: {payload}")
+            time.sleep(10)
+            return {
+                "processed_by": self.worker_id,
+                "processed_at": datetime.now().isoformat(),
+                "output": f"Processed {payload}"
+            }
 
     def run(self):
         """
@@ -134,7 +204,7 @@ class Worker:
                     
                 elif response.status_code == 404:
                     # No tasks available
-                    time.sleep(5)
+                    time.sleep(1) # Reduced sleep for responsiveness
                 
                 elif response.status_code == 503:
                     # Not the leader anymore, find new leader

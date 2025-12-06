@@ -149,8 +149,8 @@ class Raft:
 
         self._cancel_election_timer()
 
-        # Randomize timeout between 150ms and 500ms (increased range)
-        timeout_ms = random.randint(300, 600)
+        # Randomize timeout between 1500ms and 3000ms (increased range for stability)
+        timeout_ms = random.randint(1500, 3000)
 
         self._election_timer = self.scheduler.call_later(
             timeout_ms, self._on_election_timeout
@@ -171,7 +171,7 @@ class Raft:
         self._cancel_heartbeat_timer()
 
         # Heartbeat interval 
-        heartbeat_ms = 100
+        heartbeat_ms = 500
 
         self._heartbeat_timer = self.scheduler.call_later(
             heartbeat_ms, self._on_heartbeat_timeout
