@@ -297,6 +297,16 @@ class RaftBroker:
         @self.app.route('/register_worker', methods=['POST'])
         def register_worker():
             """Worker registration (not replicated)."""
+            from raft_algorithm import RaftState
+            
+            # FIXED: Only leader should register workers
+            if self.raft.state != RaftState.LEADER:
+                # Return 503 to tell worker to look elsewhere
+                return jsonify({
+                    "error": "Not the leader",
+                    "leader": self.raft.leader_id
+                }), 503
+
             data = request.get_json()
             worker_id = data.get("worker_id")
             
@@ -312,6 +322,15 @@ class RaftBroker:
         @self.app.route('/heartbeat', methods=['POST'])
         def heartbeat():
             """Worker heartbeat (not replicated)."""
+            from raft_algorithm import RaftState
+
+            # FIXED: Only leader should accept heartbeats
+            if self.raft.state != RaftState.LEADER:
+                 return jsonify({
+                    "error": "Not the leader",
+                    "leader": self.raft.leader_id
+                }), 503
+
             data = request.get_json()
             worker_id = data.get("worker_id")
             

@@ -61,12 +61,21 @@ class Worker:
             try:
                 response = requests.post(
                     f"{self.current_leader}/heartbeat",
-                    json={"worker_id": self.worker_id}
+                    json={"worker_id": self.worker_id},
+                    timeout=1
                 )
-                if response.status_code == 200:
+                
+                # FIXED: Handle non-200 responses (e.g., 503 Not Leader)
+                if response.status_code != 200:
+                    print(f"[{self.worker_id}] Heartbeat rejected ({response.status_code}). Finding new leader...")
+                    self.find_leader()
+                else:
                     print(f"[{self.worker_id}] Heartbeat sent successfully")
+            
             except Exception as e:
-                print(f"[{self.worker_id}] Error sending heartbeat: {e}")
+                print(f"[{self.worker_id}] Heartbeat failed: {e}")
+                self.find_leader()
+            
             threading.Event().wait(self.heartbeat_interval)
 
     def execute_python_task(self, task):
