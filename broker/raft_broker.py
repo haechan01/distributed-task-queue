@@ -1,11 +1,13 @@
 """Broker that uses Raft for distributed consensus and replication."""
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 from datetime import datetime
 import threading
 from typing import Dict, Any
 import uuid
 import sys
+import os
 from raft_algorithm import Raft
 from real_protocols import HTTPTransport, RealScheduler
 
@@ -124,6 +126,7 @@ class RaftBroker:
         
         # Flask app
         self.app = Flask(__name__)
+        CORS(self.app) # Enable CORS
         self._setup_routes()
         
         # Start health check thread
@@ -157,6 +160,14 @@ class RaftBroker:
             
             return True
     
+    def _get_worker_task(self, worker_id):
+        """Get task currently assigned to worker."""
+        with self.state_machine.lock:
+            for task in self.state_machine.tasks.values():
+                if task.get("worker_id") == worker_id and task["status"] == "processing":
+                    return task["task_id"]
+        return None
+
     def _setup_routes(self):
         """Setup Flask HTTP routes."""
         
@@ -333,6 +344,71 @@ class RaftBroker:
                 "tasks": stats,
                 "workers": len(self.workers)
             }), 200
+
+        @self.app.route('/cluster_status', methods=['GET'])
+        def cluster_status():
+            """Aggregated status for dashboard."""
+            from raft_algorithm import RaftState
+            import requests # Import requests here to avoid circular imports if any
+            
+            # Get status from all brokers
+            cluster_info = {}
+            for node_id, url in self.broker_urls.items():
+                try:
+                    if node_id == self.node_id:
+                        # Local status
+                        cluster_info[node_id] = {
+                            "url": url,
+                            "state": self.raft.state.value,
+                            "term": self.raft.current_term,
+                            "log_length": len(self.raft.log),
+                            "commit_index": self.raft.commit_index,
+                            "last_applied": self.raft.last_applied,
+                            "replication_lag": len(self.raft.log) - 1 - self.raft.commit_index,
+                            "status": "online"
+                        }
+                    else:
+                        resp = requests.get(f"{url}/status", timeout=1)
+                        data = resp.json()
+                        cluster_info[node_id] = {
+                            "url": url,
+                            "state": data["state"],
+                            "term": data["term"],
+                            "log_length": data["log_length"],
+                            "commit_index": data["commit_index"],
+                            "replication_lag": data["log_length"] - 1 - data["commit_index"],
+                            "status": "online"
+                        }
+                except:
+                    cluster_info[node_id] = {
+                        "url": url,
+                        "status": "offline",
+                        "state": "failed"
+                    }
+            
+            # Worker status
+            worker_status = {}
+            with self.worker_lock:
+                now = datetime.now()
+                for wid, info in self.workers.items():
+                    elapsed = (now - info["last_heartbeat"]).total_seconds()
+                    worker_status[wid] = {
+                        "status": "failed" if elapsed > 10 else info["status"],
+                        "last_seen": elapsed,
+                        "current_task": self._get_worker_task(wid)
+                    }
+            
+            return jsonify({
+                "timestamp": datetime.now().isoformat(),
+                "brokers": cluster_info,
+                "workers": worker_status,
+                "tasks": self.state_machine.get_stats(),
+                "leader": self.raft.leader_id
+            })
+
+        @self.app.route('/dashboard')
+        def dashboard():
+            return send_file('dashboard/index.html')
     
     def _start_health_check(self):
         """Background thread to check worker health."""
