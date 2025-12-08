@@ -58,15 +58,26 @@ class Worker:
         Send periodic heartbeat to broker
         """
         while self.running:
+            if not self.current_leader:
+                self.find_leader()
+                threading.Event().wait(self.heartbeat_interval)
+                continue
+                
             try:
                 response = requests.post(
                     f"{self.current_leader}/heartbeat",
-                    json={"worker_id": self.worker_id}
+                    json={"worker_id": self.worker_id},
+                    timeout=2
                 )
                 if response.status_code == 200:
                     print(f"[{self.worker_id}] Heartbeat sent successfully")
+                elif response.status_code == 503:
+                    # Not the leader anymore, find new leader
+                    print(f"[{self.worker_id}] Heartbeat rejected (not leader), finding new leader...")
+                    self.find_leader()
             except Exception as e:
-                print(f"[{self.worker_id}] Error sending heartbeat: {e}")
+                print(f"[{self.worker_id}] Heartbeat failed: {e}, finding new leader...")
+                self.find_leader()
             threading.Event().wait(self.heartbeat_interval)
 
     def execute_python_task(self, task):

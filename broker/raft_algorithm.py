@@ -170,8 +170,8 @@ class Raft:
         """
         self._cancel_heartbeat_timer()
 
-        # Heartbeat interval 
-        heartbeat_ms = 500
+        # Heartbeat interval (should be much less than election timeout)
+        heartbeat_ms = 300
 
         self._heartbeat_timer = self.scheduler.call_later(
             heartbeat_ms, self._on_heartbeat_timeout

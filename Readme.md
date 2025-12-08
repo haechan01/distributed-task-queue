@@ -20,22 +20,21 @@ A distributed task queue implementing the Raft consensus algorithm.
 
 ### Start Brokers
 ```bash
-cd broker
 
 # Terminal 1
-python raft_broker.py broker-1
+python broker/raft_broker.py broker-1
 
 # Terminal 2
-python raft_broker.py broker-2
+python broker/raft_broker.py broker-2
 
 # Terminal 3
-python raft_broker.py broker-3
+python broker/raft_broker.py broker-3
 ```
 
 ### Start Workers
 ```bash
-cd worker
-python worker.py worker-1
+python worker/worker.py worker-1
+python worker/worker.py worker-2
 ```
 
 ### Submit Tasks
