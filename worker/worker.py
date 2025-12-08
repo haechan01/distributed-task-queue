@@ -7,6 +7,29 @@ import threading
 import subprocess
 import tempfile
 import os
+import platform
+
+# Resource limits (Unix only)
+if platform.system() != 'Windows':
+    import resource
+
+def _set_resource_limits():
+    """Apply resource limits before subprocess execution (Unix only).
+    
+    Limits:
+    - CPU: 30 seconds
+    - Memory: 256MB
+    - File size: 10MB
+    """
+    if platform.system() == 'Windows':
+        return  # resource module not available on Windows
+    
+    # 30 second CPU limit
+    resource.setrlimit(resource.RLIMIT_CPU, (30, 30))
+    # 256MB memory limit
+    resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
+    # 10MB file size limit
+    resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))
 
 class Worker:
     def __init__(self, worker_id, broker_urls):
@@ -108,12 +131,14 @@ if __name__ == "__main__":
             with os.fdopen(fd, 'w') as f:
                 f.write(wrapper)
             
-            # Execute
+            # Execute with resource limits (Unix) or without (Windows)
+            preexec = _set_resource_limits if platform.system() != 'Windows' else None
             result = subprocess.run(
                 ['python3', script_path, json.dumps(args)],
                 capture_output=True,
                 text=True,
-                timeout=timeout
+                timeout=timeout,
+                preexec_fn=preexec
             )
             
             if result.returncode == 0:

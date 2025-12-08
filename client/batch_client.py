@@ -79,6 +79,22 @@ class BatchClient:
         return results
 
 
+def aggregate_numeric_results(results: dict) -> float:
+    """Aggregate numeric results from completed tasks.
+    
+    Handles various result structures:
+    - Direct numeric values
+    - Dicts with 'result' key containing numeric value
+    """
+    total = 0
+    for tid, res in results.items():
+        if isinstance(res, (int, float)):
+            total += res
+        elif isinstance(res, dict) and isinstance(res.get("result"), (int, float)):
+            total += res["result"]
+    return total
+
+
 # Example usage
 if __name__ == "__main__":
     client = BatchClient([
@@ -100,26 +116,14 @@ def count_words(text):
         task_ids = client.submit_batch(code, "count_words", chunks)
         print("Submitted tasks:", task_ids)
         
-        # Note: In a real implementation we would likely need to update raft_broker to expose /task/<id> 
-        # specifically if it doesn't exist, but based on previous logs the user ran this successfully, 
-        # so the endpoint implies it exists or was mocked? 
-        # Wait, the previous log output showed "Task ... completed". 
-        # I should check if I missed viewing the /task/<id> endpoint in raft_broker.py.
-        # It wasn't in the 'setup_routes' I viewed. 
-        # I'll check raft_broker.py again to be safe.
-        
-        # For now, I will use the code as is assuming the endpoint works as it did before.
         results = client.wait_for_results(task_ids)
         
         print("\n=== Results ===")
-        total = 0
         for tid, res in results.items():
-            print(f"Task {tid}: {res}")
-            if isinstance(res, dict) and "result" in res:
-                 total += res["result"]
-            elif isinstance(res, int):
-                 total += res
-                 
+            print(f"Task {tid[:8]}...: {res}")
+        
+        total = aggregate_numeric_results(results)
         print(f"Total words: {total}")
     except Exception as e:
         print(f"Execution failed: {e}")
+
