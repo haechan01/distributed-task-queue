@@ -149,8 +149,8 @@ class Raft:
 
         self._cancel_election_timer()
 
-        # Randomize timeout between 1500ms and 3000ms (increased range for stability)
-        timeout_ms = random.randint(1500, 3000)
+        # Randomize timeout between 3000ms and 6000ms (increased for stability)
+        timeout_ms = random.randint(3000, 6000)
 
         self._election_timer = self.scheduler.call_later(
             timeout_ms, self._on_election_timeout

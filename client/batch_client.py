@@ -99,29 +99,48 @@ if __name__ == "__main__":
         "http://localhost:6003"
     ])
     
-    # Distributed word count
+    # Slow task that takes 5 seconds each (demonstrates parallel execution)
     code = """
-def count_words(text):
+import time
+def slow_count(text):
+    time.sleep(5)  # Simulate heavy computation
     return len(text.split())
 """
     
-    chunks = ["hello world", "distributed systems are fun", "raft consensus"]
-    print("Submitting batch job...")
+    # 6 text chunks - should be distributed across workers
+    chunks = [
+        "hello world",
+        "distributed systems are fun",
+        "raft consensus algorithm",
+        "fault tolerant cluster",
+        "leader election works",
+        "log replication is key"
+    ]
+    
+    print("Submitting 6 slow tasks (5 seconds each)...")
+    print("With 2 workers, this should take ~15 seconds (3 batches of 2)")
+    print()
+    
     try:
-        task_ids = client.submit_batch(code, "count_words", chunks)
-        print("Submitted tasks:", task_ids)
+        import time
+        start = time.time()
+        
+        task_ids = client.submit_batch(code, "slow_count", chunks)
+        print(f"Submitted {len(task_ids)} tasks")
         
         results = client.wait_for_results(task_ids)
         
-        print("\n=== Results ===")
+        elapsed = time.time() - start
+        print(f"\n=== Results (completed in {elapsed:.1f}s) ===")
         total = 0
         for tid, res in results.items():
-            print(f"Task {tid}: {res}")
-            if isinstance(res, dict) and "result" in res:
-                 total += res["result"]
+            print(f"Task {tid[:8]}...: worker={res.get('processed_by', '?')}, result={res.get('result')}")
+            if isinstance(res, dict) and isinstance(res.get("result"), int):
+                total += res["result"]
             elif isinstance(res, int):
-                 total += res
+                total += res
                  
-        print(f"Total words: {total}")
+        print(f"\nTotal words: {total}")
+        print(f"Speedup: {len(chunks) * 5 / elapsed:.1f}x (vs sequential)")
     except Exception as e:
         print(f"Execution failed: {e}")

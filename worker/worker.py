@@ -204,14 +204,28 @@ if __name__ == "__main__":
                     # Process the task
                     result = self.process_task(task)
 
-                    # Report completion to broker
-                    complete_response = requests.post(
-                        f"{self.current_leader}/complete_task",
-                        json={"task_id": task['task_id'], "result": result},
-                        timeout=5
-                    )
-                    if complete_response.status_code == 200:
-                        print(f"[{self.worker_id}] Task {task['task_id']} completed successfully\n")
+                    # Report completion with retry on leader change
+                    max_retries = 3
+                    for attempt in range(max_retries):
+                        try:
+                            complete_response = requests.post(
+                                f"{self.current_leader}/complete_task",
+                                json={"task_id": task['task_id'], "result": result},
+                                timeout=5
+                            )
+                            if complete_response.status_code == 200:
+                                print(f"[{self.worker_id}] Task {task['task_id']} completed successfully\n")
+                                break
+                            elif complete_response.status_code == 503:
+                                # Leader changed, find new leader and retry
+                                print(f"[{self.worker_id}] Leader changed during completion, retrying...")
+                                self.find_leader()
+                            else:
+                                print(f"[{self.worker_id}] Completion failed: {complete_response.status_code}")
+                                break
+                        except Exception as e:
+                            print(f"[{self.worker_id}] Completion error: {e}, retrying...")
+                            self.find_leader()
                     
                 elif response.status_code == 404:
                     # No tasks available

@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html>
+
 <head>
     <title>Raft Cluster Dashboard</title>
     <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
@@ -7,6 +8,7 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
+
 <body>
     <div id="root"></div>
     <script type="text/babel">
@@ -19,9 +21,9 @@
                 candidate: 'bg-yellow-500',
                 failed: 'bg-red-500'
             };
-            
+
             const isOnline = data.status === 'online';
-            
+
             return (
                 <div className={`p-4 rounded-lg border-2 ${isOnline ? 'border-gray-300' : 'border-red-500'}`}>
                     <div className="flex items-center justify-between mb-2">
@@ -51,15 +53,15 @@
                 alive: data.current_task ? 'bg-yellow-500' : 'bg-green-500',
                 failed: 'bg-red-500'
             };
-            
+
             return (
                 <div className="p-3 rounded border flex items-center gap-3">
                     <div className={`w-3 h-3 rounded-full ${statusColors[data.status]}`}></div>
                     <div>
                         <div className="font-medium">{workerId}</div>
                         <div className="text-xs text-gray-500">
-                            {data.status === 'failed' ? 'FAILED' : 
-                             data.current_task ? `Processing: ${data.current_task.slice(0,8)}...` : 'Idle'}
+                            {data.status === 'failed' ? 'FAILED' :
+                                data.current_task ? `Processing: ${data.current_task.slice(0, 8)}...` : 'Idle'}
                         </div>
                     </div>
                 </div>
@@ -69,13 +71,24 @@
         function Dashboard() {
             const [clusterData, setClusterData] = useState(null);
             const [error, setError] = useState(null);
-            const [history, setHistory] = useState([]);
+            const [events, setEvents] = useState([]);
+            const [prevWorkers, setPrevWorkers] = useState({});
+            const [prevTasks, setPrevTasks] = useState({ pending: 0, processing: 0, completed: 0 });
+            const [prevLeader, setPrevLeader] = useState(null);
 
             const brokerUrls = [
                 'http://localhost:6001',
                 'http://localhost:6002',
                 'http://localhost:6003'
             ];
+
+            const addEvent = (type, message) => {
+                setEvents(e => [...e.slice(-50), {
+                    time: new Date(),
+                    type,
+                    message
+                }]);
+            };
 
             useEffect(() => {
                 const fetchStatus = async () => {
@@ -86,20 +99,42 @@
                                 const data = await resp.json();
                                 setClusterData(data);
                                 setError(null);
-                                
-                                // Track history for timeline
-                                setHistory(h => {
-                                    const last = h[h.length - 1];
-                                    // Only add if something interesting changed (leader or term)
-                                    if (!last || last.leader !== data.leader || last.term !== data.brokers[data.leader]?.term) {
-                                         return [...h.slice(-50), {
-                                            time: new Date(),
-                                            leader: data.leader,
-                                            term: data.brokers[data.leader]?.term
-                                        }];
+
+                                // Track leader changes
+                                const currentLeader = data.leader;
+                                const currentTerm = data.brokers[currentLeader]?.term;
+                                if (prevLeader !== currentLeader && currentLeader) {
+                                    addEvent('leader', `${currentLeader} became leader (term ${currentTerm})`);
+                                    setPrevLeader(currentLeader);
+                                }
+
+                                // Track worker changes
+                                const currentWorkers = data.workers || {};
+                                Object.keys(currentWorkers).forEach(wid => {
+                                    if (!prevWorkers[wid]) {
+                                        addEvent('worker', `${wid} connected`);
+                                    } else if (prevWorkers[wid]?.status === 'alive' && currentWorkers[wid]?.status === 'failed') {
+                                        addEvent('worker', `${wid} disconnected`);
                                     }
-                                    return h;
                                 });
+                                setPrevWorkers(currentWorkers);
+
+                                // Track task changes
+                                const tasks = data.tasks || {};
+                                if (tasks.completed > prevTasks.completed) {
+                                    const diff = tasks.completed - prevTasks.completed;
+                                    addEvent('task', `${diff} task(s) completed`);
+                                }
+                                if (tasks.pending > prevTasks.pending) {
+                                    const diff = tasks.pending - prevTasks.pending;
+                                    addEvent('task', `${diff} task(s) submitted`);
+                                }
+                                if (tasks.processing > prevTasks.processing) {
+                                    const diff = tasks.processing - prevTasks.processing;
+                                    addEvent('task', `${diff} task(s) assigned to workers`);
+                                }
+                                setPrevTasks({ ...tasks });
+
                                 return;
                             }
                         } catch (e) {
@@ -112,7 +147,19 @@
                 fetchStatus();
                 const interval = setInterval(fetchStatus, 1000);
                 return () => clearInterval(interval);
-            }, []);
+            }, [prevLeader, prevWorkers, prevTasks]);
+
+            const eventColors = {
+                leader: 'text-yellow-400',
+                worker: 'text-cyan-400',
+                task: 'text-green-400'
+            };
+
+            const eventIcons = {
+                leader: '👑',
+                worker: '👷',
+                task: '📋'
+            };
 
             if (error) {
                 return <div className="p-8 text-red-500 text-center">{error}</div>;
@@ -125,7 +172,7 @@
             return (
                 <div className="p-6 max-w-4xl mx-auto">
                     <h1 className="text-2xl font-bold mb-6">Raft Cluster Dashboard</h1>
-                    
+
                     {/* Brokers */}
                     <div className="mb-6">
                         <h2 className="text-lg font-semibold mb-3">Brokers</h2>
@@ -177,10 +224,13 @@
                     {/* Event Log */}
                     <div>
                         <h2 className="text-lg font-semibold mb-3">Recent Events</h2>
-                        <div className="bg-gray-900 text-green-400 p-4 rounded font-mono text-sm h-40 overflow-y-auto">
-                            {history.slice(-10).reverse().map((event, i) => (
-                                <div key={i}>
-                                    [{event.time.toLocaleTimeString()}] Leader: {event.leader} (term {event.term})
+                        <div className="bg-gray-900 text-green-400 p-4 rounded font-mono text-sm h-48 overflow-y-auto">
+                            {events.length === 0 && (
+                                <div className="text-gray-500">Waiting for events...</div>
+                            )}
+                            {events.slice(-15).reverse().map((event, i) => (
+                                <div key={i} className={eventColors[event.type] || 'text-green-400'}>
+                                    [{event.time.toLocaleTimeString()}] {eventIcons[event.type]} {event.message}
                                 </div>
                             ))}
                         </div>
@@ -192,4 +242,5 @@
         ReactDOM.createRoot(document.getElementById('root')).render(<Dashboard />);
     </script>
 </body>
+
 </html>
