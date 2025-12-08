@@ -227,31 +227,33 @@ class RaftBroker:
             data = request.get_json()
             worker_id = data.get("worker_id")
             
-            # Find pending task
-            task = self.state_machine.get_pending_task()
-            if not task:
-                return jsonify({"message": "No pending tasks"}), 404
-            
-            # Assign task via Raft
-            command = {
-                "type": "assign_task",
-                "task_id": task["task_id"],
-                "worker_id": worker_id,
-                "started_at": datetime.now().isoformat()
-            }
-            try:
-                # Atomically append and get the index
-                with self.commit_lock:
+            # Hold commit_lock during entire find-and-assign to prevent race conditions
+            # where two workers get assigned the same task
+            with self.commit_lock:
+                # Find pending task
+                task = self.state_machine.get_pending_task()
+                if not task:
+                    return jsonify({"message": "No pending tasks"}), 404
+                
+                # Assign task via Raft
+                command = {
+                    "type": "assign_task",
+                    "task_id": task["task_id"],
+                    "worker_id": worker_id,
+                    "started_at": datetime.now().isoformat()
+                }
+                try:
+                    # Atomically append and get the index
                     target_index = self._append_and_get_index(command)
-                
-                # Wait for commit before returning
-                if not self._wait_for_commit(target_index, timeout=1.0):
-                    return jsonify({"error": "Commit timeout"}), 503
-                
-                # Return the task
-                return jsonify(task), 200
-            except RuntimeError as e:
-                return jsonify({"error": str(e)}), 503
+                except RuntimeError as e:
+                    return jsonify({"error": str(e)}), 503
+            
+            # Wait for commit outside the lock to avoid blocking other operations
+            if not self._wait_for_commit(target_index, timeout=1.0):
+                return jsonify({"error": "Commit timeout"}), 503
+            
+            # Return the task
+            return jsonify(task), 200
         
         @self.app.route('/task/<task_id>', methods=['GET'])
         def get_task(task_id):

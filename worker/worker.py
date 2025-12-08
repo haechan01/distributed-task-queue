@@ -18,18 +18,25 @@ def _set_resource_limits():
     
     Limits:
     - CPU: 30 seconds
-    - Memory: 256MB
     - File size: 10MB
+    
+    Note: RLIMIT_AS (memory) is unreliable on macOS and can crash.
     """
     if platform.system() == 'Windows':
         return  # resource module not available on Windows
     
-    # 30 second CPU limit
-    resource.setrlimit(resource.RLIMIT_CPU, (30, 30))
-    # 256MB memory limit
-    resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
-    # 10MB file size limit
-    resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))
+    try:
+        # 30 second CPU limit
+        resource.setrlimit(resource.RLIMIT_CPU, (30, 30))
+        # 10MB file size limit  
+        resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))
+        
+        # Memory limit - only on Linux (unreliable on macOS)
+        if platform.system() == 'Linux':
+            resource.setrlimit(resource.RLIMIT_AS, (256 * 1024 * 1024, 256 * 1024 * 1024))
+    except (ValueError, OSError) as e:
+        # Some limits may not be supported on all systems
+        pass
 
 class Worker:
     def __init__(self, worker_id, broker_urls):
