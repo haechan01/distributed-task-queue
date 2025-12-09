@@ -2,41 +2,6 @@
 
 A distributed task queue system that uses the Raft consensus algorithm to achieve fault tolerance. The system can execute Python code across multiple workers while surviving broker failures without losing tasks.
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        Raft Broker Cluster                       │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐          │
-│  │  Broker-1   │◄──►│  Broker-2   │◄──►│  Broker-3   │          │
-│  │  (Leader)   │    │ (Follower)  │    │ (Follower)  │          │
-│  │  Port 6001  │    │  Port 6002  │    │  Port 6003  │          │
-│  └──────┬──────┘    └─────────────┘    └─────────────┘          │
-│         │                                                        │
-│         │ Raft Replication (AppendEntries, RequestVote)         │
-└─────────┼───────────────────────────────────────────────────────┘
-          │
-          │ HTTP API
-          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                           Workers                                │
-│  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐          │
-│  │  Worker-1   │    │  Worker-2   │    │  Worker-3   │          │
-│  │  (Polling)  │    │  (Polling)  │    │  (Polling)  │          │
-│  └─────────────┘    └─────────────┘    └─────────────┘          │
-│         │                                                        │
-│         │ Subprocess Isolation (Python Execution)               │
-└─────────┼───────────────────────────────────────────────────────┘
-          │
-          ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                           Clients                                │
-│  ┌─────────────────────────────────────────────────────┐        │
-│  │  BatchClient: Submit tasks, poll results            │        │
-│  └─────────────────────────────────────────────────────┘        │
-└─────────────────────────────────────────────────────────────────┘
-```
-
 ## Components
 
 ### Broker Cluster (`broker/`)
