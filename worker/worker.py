@@ -37,6 +37,7 @@ class Worker:
             except:
                 continue
         print(f"[{self.worker_id}] No leader found!")
+        self.current_leader = None
         return None
 
     def _register_with_leader(self):

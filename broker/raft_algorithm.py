@@ -110,6 +110,8 @@ class Raft:
 
         # Replicate to followers immediately
         self._send_append_entries()
+        
+        return len(self.log)
 
     def on_message(self, msg: Dict[str, Any]) -> None:
         """

@@ -39,7 +39,7 @@ class BrokerStateMachine:
                 if task_id in self.tasks:
                     self.tasks[task_id]["status"] = "processing"
                     self.tasks[task_id]["worker_id"] = worker_id
-                    self.tasks[task_id]["started_at"] = command["started_at"]
+                    self.tasks[task_id]["started_at"] = command.get("started_at")
                     print(f"[STATE] ✓ Task {task_id} → {worker_id}")
                     
             elif cmd_type == "complete_task":
