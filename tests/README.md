@@ -73,7 +73,6 @@ This directory contains comprehensive tests for the distributed task queue syste
 
 ### Run All Tests
 ```bash
-cd /Users/hcoh/Desktop/distributed\ task\ queue
 pytest tests/ -v
 ```
 

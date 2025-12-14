@@ -167,14 +167,11 @@ class Raft:
             self._election_timer = None
 
     def _reset_heartbeat_timer(self) -> None:
-        """
-        Schedule the next leader heartbeat (AppendEntries) if in leader state.
-        """
+        """Reset the heartbeat timer."""
         self._cancel_heartbeat_timer()
 
-        # Heartbeat interval (should be much less than election timeout)
-        heartbeat_ms = 300
-
+        # Send heartbeats significantly faster than election timeout
+        heartbeat_ms = 1000  # 1.0s heartbeat
         self._heartbeat_timer = self.scheduler.call_later(
             heartbeat_ms, self._on_heartbeat_timeout
         )
@@ -288,13 +285,7 @@ class Raft:
         """
         Step down to follower if we see a higher term.
         """
-        import traceback
         print(f"[{self.node_id}] ⬇️  Stepping down to FOLLOWER (term {self.current_term} → {term})")
-        print(f"[{self.node_id}] Current state: {self.state}")
-        print(f"[{self.node_id}] Traceback:")
-        for line in traceback.format_stack()[:-1]:
-            if 'raft_algorithm.py' in line:
-                print(line.strip())
         
         self.current_term = term
         self.state = RaftState.FOLLOWER

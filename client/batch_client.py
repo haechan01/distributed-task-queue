@@ -110,11 +110,7 @@ def slow_count(text):
     # 6 text chunks - should be distributed across workers
     chunks = [
         "hello world",
-        "distributed systems are fun",
-        "raft consensus algorithm",
-        "fault tolerant cluster",
-        "leader election works",
-        "log replication is key"
+
     ]
     
     print("Submitting 6 slow tasks (5 seconds each)...")

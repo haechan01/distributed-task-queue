@@ -20,7 +20,18 @@ class BrokerStateMachine:
     def __init__(self):
         self.tasks = {}
         self.lock = threading.Lock()
+        self.events = []  # Recent events log
     
+    def _log_event(self, message):
+        """Add event to log, keeping only last 50."""
+        self.events.append({
+            "time": datetime.now().isoformat(),
+            "type": "task",
+            "message": message
+        })
+        if len(self.events) > 50:
+            self.events.pop(0)
+
     def apply_command(self, command: Dict[str, Any], index: int):
         """
         Called by Raft when a log entry is committed.
@@ -31,6 +42,7 @@ class BrokerStateMachine:
             if cmd_type == "submit_task":
                 task = command["task"]
                 self.tasks[task["task_id"]] = task
+                self._log_event(f"Task {task['task_id'][:8]} submitted")
                 print(f"[STATE] ✓ Task {task['task_id']} submitted")
                 
             elif cmd_type == "assign_task":
@@ -39,7 +51,8 @@ class BrokerStateMachine:
                 if task_id in self.tasks:
                     self.tasks[task_id]["status"] = "processing"
                     self.tasks[task_id]["worker_id"] = worker_id
-                    self.tasks[task_id]["started_at"] = command.get("started_at")
+                    self.tasks[task_id]["started_at"] = command["started_at"]
+                    self._log_event(f"Task {task_id[:8]} assigned to {worker_id}")
                     print(f"[STATE] ✓ Task {task_id} → {worker_id}")
                     
             elif cmd_type == "complete_task":
@@ -48,6 +61,7 @@ class BrokerStateMachine:
                     self.tasks[task_id]["status"] = "completed"
                     self.tasks[task_id]["result"] = command["result"]
                     self.tasks[task_id]["completed_at"] = command["completed_at"]
+                    self._log_event(f"Task {task_id[:8]} completed")
                     print(f"[STATE] ✓ Task {task_id} completed")
             
             elif cmd_type == "reassign_task":
@@ -55,13 +69,16 @@ class BrokerStateMachine:
                 if task_id in self.tasks:
                     self.tasks[task_id]["status"] = "pending"
                     self.tasks[task_id]["worker_id"] = None
+                    self._log_event(f"Task {task_id[:8]} reassigned (worker died)")
                     print(f"[STATE] ✓ Task {task_id} reassigned (worker died)")
     
-    def get_pending_task(self):
-        """Find a pending task."""
+    def get_pending_task(self, exclude_ids=None):
+        """Find a pending task, excluding specific IDs."""
         with self.lock:
             for task_id, task in self.tasks.items():
                 if task["status"] == "pending":
+                    if exclude_ids and task_id in exclude_ids:
+                        continue
                     return dict(task)  # Return a copy
             return None
     
@@ -103,6 +120,10 @@ class RaftBroker:
         # Commit synchronization for waiting on log commits
         self.commit_lock = threading.Lock()
         self.commit_condition = threading.Condition(self.commit_lock)
+        
+        # In-flight assignment tracking to prevent double-assignment
+        self.inflight_assignments = set()
+        self.inflight_lock = threading.Lock()
         
         # Wrap the apply function to notify waiters
         original_apply = self.state_machine.apply_command
@@ -226,8 +247,13 @@ class RaftBroker:
             data = request.get_json()
             worker_id = data.get("worker_id")
             
-            # Find pending task
-            task = self.state_machine.get_pending_task()
+            # Find pending task (prevent double assignment)
+            task = None
+            with self.inflight_lock:
+                task = self.state_machine.get_pending_task(exclude_ids=self.inflight_assignments)
+                if task:
+                    self.inflight_assignments.add(task["task_id"])
+            
             if not task:
                 return jsonify({"message": "No pending tasks"}), 404
             
@@ -251,6 +277,10 @@ class RaftBroker:
                 return jsonify(task), 200
             except RuntimeError as e:
                 return jsonify({"error": str(e)}), 503
+            finally:
+                # Always clear inflight status
+                with self.inflight_lock:
+                    self.inflight_assignments.discard(task["task_id"])
         
         @self.app.route('/complete_task', methods=['POST'])
         def complete_task():
@@ -369,6 +399,13 @@ class RaftBroker:
             from raft_algorithm import RaftState
             import requests # Import requests here to avoid circular imports if any
             
+            # Redirect to leader for consistent worker status
+            if self.raft.state != RaftState.LEADER and self.raft.leader_id:
+                leader_url = self.broker_urls.get(self.raft.leader_id)
+                if leader_url:
+                    from flask import redirect
+                    return redirect(f"{leader_url}/cluster_status", code=307)
+
             # Get status from all brokers
             cluster_info = {}
             for node_id, url in self.broker_urls.items():
@@ -411,7 +448,7 @@ class RaftBroker:
                 for wid, info in self.workers.items():
                     elapsed = (now - info["last_heartbeat"]).total_seconds()
                     worker_status[wid] = {
-                        "status": "failed" if elapsed > 10 else info["status"],
+                        "status": "failed" if elapsed > 30 else info["status"],
                         "last_seen": elapsed,
                         "current_task": self._get_worker_task(wid)
                     }
@@ -421,7 +458,8 @@ class RaftBroker:
                 "brokers": cluster_info,
                 "workers": worker_status,
                 "tasks": self.state_machine.get_stats(),
-                "leader": self.raft.leader_id
+                "leader": self.raft.leader_id,
+                "events": self.state_machine.events[::-1]  # Return recent events (reversed)
             })
 
         @self.app.route('/dashboard')
@@ -442,11 +480,24 @@ class RaftBroker:
                 with self.worker_lock:
                     for worker_id, info in list(self.workers.items()):
                         elapsed = (now - info["last_heartbeat"]).total_seconds()
-                        if elapsed > 10 and info["status"] == "alive":
-                            print(f"[BROKER] Worker {worker_id} DEAD")
+                        
+                        # Increased timeout to 30s to avoid false positives
+                        if elapsed > 30 and info["status"] == "alive":
+                            print(f"[BROKER] Worker {worker_id} DEAD (last heartbeat {elapsed:.1f}s ago)")
                             info["status"] = "dead"
                             
-                            # TODO: Reassign tasks from dead worker
+                            # Reassign tasks from dead worker
+                            with self.state_machine.lock:
+                                for task_id, task in self.state_machine.tasks.items():
+                                    if task.get("worker_id") == worker_id and task["status"] == "processing":
+                                        print(f"[BROKER] Reassigning task {task_id} from dead worker {worker_id}")
+                                        try:
+                                            self.raft.client_append({
+                                                "type": "reassign_task",
+                                                "task_id": task_id
+                                            })
+                                        except Exception as e:
+                                            print(f"[BROKER] Failed to reassign task {task_id}: {e}")
         
         threading.Thread(target=check_workers, daemon=True).start()
     

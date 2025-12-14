@@ -82,12 +82,15 @@
                 'http://localhost:6003'
             ];
 
-            const addEvent = (type, message) => {
-                setEvents(e => [...e.slice(-50), {
-                    time: new Date(),
-                    type,
-                    message
-                }]);
+            const [lastBackendEventTime, setLastBackendEventTime] = useState(null);
+
+            const addEvent = (type, message, time = new Date()) => {
+                setEvents(e => {
+                    const newEvent = { time, type, message };
+                    // Keep last 50 events, sorted by time
+                    const allEvents = [...e, newEvent].sort((a, b) => a.time - b.time);
+                    return allEvents.slice(-50);
+                });
             };
 
             useEffect(() => {
@@ -100,7 +103,7 @@
                                 setClusterData(data);
                                 setError(null);
 
-                                // Track leader changes
+                                // 1. Track leader changes (Frontend Logic)
                                 const currentLeader = data.leader;
                                 const currentTerm = data.brokers[currentLeader]?.term;
                                 if (prevLeader !== currentLeader && currentLeader) {
@@ -108,7 +111,7 @@
                                     setPrevLeader(currentLeader);
                                 }
 
-                                // Track worker changes
+                                // 2. Track worker changes (Frontend Logic)
                                 const currentWorkers = data.workers || {};
                                 Object.keys(currentWorkers).forEach(wid => {
                                     if (!prevWorkers[wid]) {
@@ -118,22 +121,30 @@
                                     }
                                 });
                                 setPrevWorkers(currentWorkers);
+                                setPrevTasks(data.tasks); // Update tasks state without logging synthetic events
 
-                                // Track task changes
-                                const tasks = data.tasks || {};
-                                if (tasks.completed > prevTasks.completed) {
-                                    const diff = tasks.completed - prevTasks.completed;
-                                    addEvent('task', `${diff} task(s) completed`);
+                                // 3. Ingest Task Events from Backend (Backend Logic)
+                                if (data.events && data.events.length > 0) {
+                                    // Events come newest-first from backend
+                                    const backendEvents = [...data.events].reverse(); // Make them oldest-first
+
+                                    let maxTime = lastBackendEventTime;
+
+                                    backendEvents.forEach(e => {
+                                        const eTime = new Date(e.time);
+                                        // Only add if newer than what we've seen
+                                        if (!lastBackendEventTime || eTime > lastBackendEventTime) {
+                                            addEvent('task', e.message, eTime);
+                                            if (!maxTime || eTime > maxTime) {
+                                                maxTime = eTime;
+                                            }
+                                        }
+                                    });
+
+                                    if (maxTime && maxTime !== lastBackendEventTime) {
+                                        setLastBackendEventTime(maxTime);
+                                    }
                                 }
-                                if (tasks.pending > prevTasks.pending) {
-                                    const diff = tasks.pending - prevTasks.pending;
-                                    addEvent('task', `${diff} task(s) submitted`);
-                                }
-                                if (tasks.processing > prevTasks.processing) {
-                                    const diff = tasks.processing - prevTasks.processing;
-                                    addEvent('task', `${diff} task(s) assigned to workers`);
-                                }
-                                setPrevTasks({ ...tasks });
 
                                 return;
                             }
@@ -147,7 +158,7 @@
                 fetchStatus();
                 const interval = setInterval(fetchStatus, 1000);
                 return () => clearInterval(interval);
-            }, [prevLeader, prevWorkers, prevTasks]);
+            }, [prevLeader, prevWorkers, lastBackendEventTime]);
 
             const eventColors = {
                 leader: 'text-yellow-400',
